@@ -9,7 +9,7 @@ class OSRSFlipper:
     def __init__(self):
         self.base_url = "https://prices.runescape.wiki/api/v1/osrs"
         self.headers = {
-            "User-Agent": "OSRSFlipper/1.0 (https://github.com/yourusername/OSRSFlippingTool; your@email.com)"
+            "User-Agent": "OSRSFlipper/1.0 (https://github.com/yourusername/OSRSFlippingTool; ryanglaser150@gmail.com)"
         }
         self.item_names = self._load_item_names()
 
@@ -175,19 +175,38 @@ class OSRSFlipper:
                 if not item_data:
                     continue
                     
-                # Calculate average high and low prices over the 7 days
+                # Get all high and low prices
                 high_prices = [p.get('avgHighPrice', 0) for p in item_data if p.get('avgHighPrice')]
                 low_prices = [p.get('avgLowPrice', 0) for p in item_data if p.get('avgLowPrice')]
                 
                 if not high_prices or not low_prices:
                     continue
-                    
-                avg_high = sum(high_prices) / len(high_prices)
-                avg_low = sum(low_prices) / len(low_prices)
                 
-                # Calculate standard deviation
-                high_std = (sum((x - avg_high) ** 2 for x in high_prices) / len(high_prices)) ** 0.5
-                low_std = (sum((x - avg_low) ** 2 for x in low_prices) / len(low_prices)) ** 0.5
+                # Sort prices to calculate percentiles
+                high_prices.sort()
+                low_prices.sort()
+                
+                # Calculate 5th and 95th percentiles
+                high_5th = high_prices[int(len(high_prices) * 0.05)]
+                high_95th = high_prices[int(len(high_prices) * 0.95)]
+                low_5th = low_prices[int(len(low_prices) * 0.05)]
+                low_95th = low_prices[int(len(low_prices) * 0.95)]
+                
+                # Calculate average of 5th percentile range (bottom 5% of prices)
+                avg_low_5th = sum(low_prices[:int(len(low_prices) * 0.05)]) / int(len(low_prices) * 0.05)
+                avg_high_5th = sum(high_prices[:int(len(high_prices) * 0.05)]) / int(len(high_prices) * 0.05)
+                
+                # Calculate average of 95th percentile range (top 5% of prices)
+                avg_low_95th = sum(low_prices[int(len(low_prices) * 0.95):]) / (len(low_prices) - int(len(low_prices) * 0.95))
+                avg_high_95th = sum(high_prices[int(len(high_prices) * 0.95):]) / (len(high_prices) - int(len(high_prices) * 0.95))
+                
+                # Calculate average of middle 90% range
+                avg_high = sum(high_prices[int(len(high_prices) * 0.05):int(len(high_prices) * 0.95)]) / (len(high_prices) * 0.9)
+                avg_low = sum(low_prices[int(len(low_prices) * 0.05):int(len(low_prices) * 0.95)]) / (len(low_prices) * 0.9)
+                
+                # Calculate standard deviation of the middle 90% range
+                high_std = (sum((x - avg_high) ** 2 for x in high_prices[int(len(high_prices) * 0.05):int(len(high_prices) * 0.95)]) / (len(high_prices) * 0.9)) ** 0.5
+                low_std = (sum((x - avg_low) ** 2 for x in low_prices[int(len(low_prices) * 0.05):int(len(low_prices) * 0.95)]) / (len(low_prices) * 0.9)) ** 0.5
                 
                 # Calculate average volumes
                 high_volumes = [p.get('highPriceVolume', 0) for p in item_data if p.get('highPriceVolume')]
@@ -201,6 +220,14 @@ class OSRSFlipper:
                     'avg_low': avg_low,
                     'high_std': high_std,
                     'low_std': low_std,
+                    'high_5th': high_5th,
+                    'high_95th': high_95th,
+                    'low_5th': low_5th,
+                    'low_95th': low_95th,
+                    'avg_high_5th': avg_high_5th,  # Average of bottom 5% of high prices
+                    'avg_low_5th': avg_low_5th,    # Average of bottom 5% of low prices
+                    'avg_high_95th': avg_high_95th,  # Average of top 5% of high prices
+                    'avg_low_95th': avg_low_95th,    # Average of top 5% of low prices
                     'avg_high_volume': avg_high_volume,
                     'avg_low_volume': avg_low_volume,
                     'data_points': len(item_data)
@@ -213,34 +240,26 @@ class OSRSFlipper:
         return results
 
     def _is_price_consistent(self, current_high: int, current_low: int, historical_data: Dict) -> bool:
-        """Check if current prices are consistent with 7-day history."""
+        """Check if current prices are consistent with historical data."""
         if not historical_data:
             return False
             
-        # Calculate current spread
-        current_spread = (current_high - current_low) / current_low
-        
-        # Calculate historical spread
-        historical_spread = (historical_data['avg_high'] - historical_data['avg_low']) / historical_data['avg_low']
-        
         # Check if current prices are within 2 standard deviations of historical averages
         high_within_range = abs(current_high - historical_data['avg_high']) <= (2 * historical_data['high_std'])
         low_within_range = abs(current_low - historical_data['avg_low']) <= (2 * historical_data['low_std'])
         
-        # Check if current spread is not significantly different from historical spread
-        spread_within_range = abs(current_spread - historical_spread) <= 0.1  # Allow 10% difference
+        # Check if current prices are within the 5th-95th percentile range
+        high_within_percentile = historical_data['high_5th'] <= current_high <= historical_data['high_95th']
+        low_within_percentile = historical_data['low_5th'] <= current_low <= historical_data['low_95th']
         
-        # Require at least 24 data points (6 hours * 4 = 24 points per day)
-        sufficient_data = historical_data['data_points'] >= 24
-        
-        return high_within_range and low_within_range and spread_within_range and sufficient_data
+        return high_within_range and low_within_range and high_within_percentile and low_within_percentile
 
     def _calculate_required_capital(self, buy_price: int, buy_limit: int, ge_tax: int, bond_conversion_cost: int) -> int:
         """Calculate the total capital required to flip an item."""
         # Cost to buy the items
         buy_cost = buy_price * buy_limit
         
-        # Add GE tax and bond conversion cost
+        # Add GE tax and bond conversion cost, if item is not a bond then bond_conversion_cost is 0
         total_cost = buy_cost + ge_tax + bond_conversion_cost
         
         # Add a 5% buffer for price fluctuations
@@ -315,7 +334,7 @@ class OSRSFlipper:
                 low_volume_items += 1
                 continue
             
-            # Calculate potential profit margin using current prices
+            # Calculate potential profit margin using current prices    
             # Include GE tax in calculations
             ge_tax = self._calculate_ge_tax(current_high)
             
